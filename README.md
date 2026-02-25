@@ -5,13 +5,13 @@ This method implements a **dynamic, asynchronous clustering algorithm** using th
 
 ## Quick Start
 1. Edit `submit_pipeline.sh`
-   Update the script to specify your input paths, clustering and final-merging parameters, and the number of nodes and memory to request on HPC.
+   - Update the script to specify your input paths, clustering and final-merging parameters, and the number of nodes and memory to request on HPC.
 2. Make the `submit_pipeline.sh` file executable:
    ```bash
    chmod +x submit_pipeline.sh
    ```
 2. Run the submit_pipeline.sh 
-   This submits both the clustering and the final merging job
+   - This submits both the clustering and the final merging job
    ```bash
    ./submit_pipeline.sh
    ```
