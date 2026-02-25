@@ -5,19 +5,19 @@ This method implements a **dynamic, asynchronous clustering algorithm** using th
 
 ## Quick Start
 1. Edit `submit_pipeline.sh`
-Update the script to specify your input paths, clustering and final-merging parameters, and the number of nodes and memory to request on HPC.
+   Update the script to specify your input paths, clustering and final-merging parameters, and the number of nodes and memory to request on HPC.
 2. Make the `submit_pipeline.sh` file executable:
    ```bash
    chmod +x submit_pipeline.sh
    ```
 2. Run the submit_pipeline.sh 
-This submits both the clustering and the final merging job
+   This submits both the clustering and the final merging job
    ```bash
    ./submit_pipeline.sh
    ```
 3. Find the final output
-- The merged clustering results are saved in clustering_results_after_merging.csv, where the index contains cell names and the cl column contains cluster IDs
-- Refer to manager_output.log and final_merge.log for details on how clusters were split in each clustering job, and the number of clusters before and after final merging.
+   - The merged clustering results are saved in clustering_results_after_merging.csv, where the index contains cell names and the cl column contains cluster IDs
+   - Refer to manager_output.log and final_merge.log for details on how clusters were split in each clustering job, and the number of clusters before and after final merging.
 
 ## Background
 The transcriptomic clustering Python package that uses a **scVI latent space** can be found here: [transcriptomic_clustering](https://github.com/AllenInstitute/transcriptomic_clustering/tree/hmba/tc_latent). It is the Python version of the R package [scrattch.hicat](https://github.com/AllenInstitute/scrattch.hicat), both of which perform clustering recursively (depth-first search). The recursive approach can take significant time for large datasets. For instance, clustering 1 million cells can take ~2 days.
