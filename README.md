@@ -1,13 +1,23 @@
 # Accelerating *transcriptomic_clustering* with Distributed Computing
 
 
-This method implements a **dynamic, asynchronous clustering algorithm** using the **Message-Passing Interface (MPI)** to distribute clustering tasks across multiple HPC nodes. It provides the same clustering results as the transcriptomic_clustering package but is optimized for distributed computating using MPI, significantly reducing the time required to cluster large datasets. 
+This method implements a **dynamic, asynchronous clustering algorithm** using the **Message-Passing Interface (MPI)** to distribute clustering tasks across multiple HPC nodes. It provides the same clustering results as the transcriptomic_clustering package (except that nearby cluster ids no longer imply similarity), but is optimized for distributed computating using MPI, significantly reducing runtime for large datasets. In v2.0.0, the final merging step is included in the same run.
 
 ## Quick Start
-1. Modify the `sbatch_mpi.sh` script to specify the number of nodes and any required configuration for your HPC environment. Also, specify the paths to the raw counts (a .h5ad file), the precomputed latent space (a .csv file with cell names as index), the output directory, the manager and the worker scripts, and the clustering parameters. (Optional) Change the conda environment and the path to the trancriptomic_clustering package (if it is not installed in the same conda enviroment). See requirements_tc.txt for building your own conda enviroment.
-2. Submit the job to your HPC using:
+1. Edit `submit_pipeline.sh`
+Update the script to specify your input paths, clustering and final-merging parameters, and the number of nodes and memory to request on HPC.
+2. Make the `submit_pipeline.sh` file executable:
    ```bash
-   sbatch sbatch_mpi.sh
+   chmod +x submit_pipeline.sh
+   ```
+2. Run the submit_pipeline.sh 
+This submits both the clustering and the final merging job
+   ```bash
+   ./submit_pipeline.sh
+   ```
+3. Find the final output
+- The merged clustering results are saved in clustering_results_after_merging.csv, where the index contains cell names and the cl column contains cluster IDs
+- Refer to manager_output.log and final_merge.log for details on how clusters were split in each clustering job, and the number of clusters before and after final merging.
 
 ## Background
 The transcriptomic clustering Python package that uses a **scVI latent space** can be found here: [transcriptomic_clustering](https://github.com/AllenInstitute/transcriptomic_clustering/tree/hmba/tc_latent). It is the Python version of the R package [scrattch.hicat](https://github.com/AllenInstitute/scrattch.hicat), both of which perform clustering recursively (depth-first search). The recursive approach can take significant time for large datasets. For instance, clustering 1 million cells can take ~2 days.

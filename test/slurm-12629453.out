@@ -1,0 +1,11 @@
+==========================================
+SLURM_JOB_ID = 12629453
+Username = dan.yuan
+Group = 10513
+SLURM_JOB_NODELIST = n[92-93,222-224]
+==========================================
+SLURM_NNODES=5 SLURM_NTASKS=5 => manager=1 worker=4
+
+real	9m53.879s
+user	0m0.014s
+sys	0m0.014s

@@ -10,6 +10,7 @@ import scanpy as sc
 import re
 import ast
 import psutil
+import anndata as ad
 
 from transcriptomic_clustering.iterative_clustering import onestep_clust, OnestepKwargs
 
@@ -75,8 +76,14 @@ def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs): # data i
         cluster_louvain_kwargs = cluster_louvain_kwargs,
         merge_clusters_kwargs = merge_clusters_kwargs
     )
-
-    adata = sc.read(adata_path)
+    
+    if '.zarr' in adata_path:
+        print(f"Reading in anndata from zarr format: {adata_path}", flush=True)
+        adata = ad.read_zarr(adata_path)
+    elif '.h5ad' in adata_path:
+        adata = sc.read(adata_path)
+    else:
+        raise ValueError(f"Unsupported file format for adata_path: {adata_path}. Please provide a .h5ad or .zarr file.")
     print(f"Finished reading in anndata: {adata}", flush=True)
 
     if np.max(adata.X) > 100:
