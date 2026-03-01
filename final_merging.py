@@ -77,8 +77,8 @@ def main(adata_path, latent_path, out_dir, final_merge_kwargs): # data is a tupl
 
     # perform final_merging
     print(f"====================")
-    print(f"Performing final merging...")
-    print(f"clusters before merging: {len(clusters)}")
+    print(f"Performing the final merge...")
+    print(f"clusters before the final merge: {len(clusters)}")
 
     clusters_after_merging, markers_after_merging = final_merge(
         adata=adata, 
@@ -90,19 +90,19 @@ def main(adata_path, latent_path, out_dir, final_merge_kwargs): # data is a tupl
         return_markers_df=False, # return the pair-wise DE results for each cluster pair. If False (default), only return a set of markers (top 20 of up and down regulated genes in each pair comparison)
         final_merge_kwargs=merge_kwargs)
 
-    print(f"Finished final merging. Total number of clusters after merging: {len(clusters_after_merging)}")
+    print(f"Finished the final merge. Total number of clusters after the final merge: {len(clusters_after_merging)}")
 
-    with open(os.path.join(out_dir, 'out', "clustering_results_after_merging.pkl"), 'wb') as f:
+    with open(os.path.join(out_dir, 'out', "clusters_after_final_merge.pkl"), 'wb') as f:
         pickle.dump(clusters_after_merging, f)
     
     # determine datatype for markers_after_merging and save
     if markers_after_merging is None:
         print("Skipped calculating markers. Did not save markers.")
     elif isinstance(markers_after_merging, pd.DataFrame):
-        markers_after_merging.to_csv(os.path.join(out_dir, 'out', 'markers_after_merging.csv'))
+        markers_after_merging.to_csv(os.path.join(out_dir, 'out', 'markers_after_final_merge.csv'))
         print('Finished writing the pair-wise DE results to a .csv file.')
     else:
-        with open(os.path.join(out_dir, 'out', 'markers_after_merging.pkl'), 'wb') as f:
+        with open(os.path.join(out_dir, 'out', 'markers_after_final_merge.pkl'), 'wb') as f:
             pickle.dump(markers_after_merging, f)
         print('Finished writing top markers to a .pkl file')
     
@@ -113,7 +113,7 @@ def main(adata_path, latent_path, out_dir, final_merge_kwargs): # data is a tupl
         for j in clusters_after_merging[i]:
             cl[j] = i+1
     res = pd.DataFrame({'cl': cl}, index=adata.obs_names)
-    res.to_csv(os.path.join(out_dir, 'out', 'clustering_results_after_merging.csv'))
+    res.to_csv(os.path.join(out_dir, 'out', 'clusters_after_final_merge.csv'))
     
     print(f"Finished writing clustering results to {out_dir}/out/")
 

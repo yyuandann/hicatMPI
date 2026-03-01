@@ -97,13 +97,29 @@ def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs): # data i
     
     print(f"Memory usage with adata in memory: {psutil.virtual_memory().percent}%", flush=True)
 
-    # determine if latent_path is valid
     if os.path.exists(latent_path):
         latent = pd.read_csv(latent_path, index_col=0)
-        latent = latent.loc[adata.obs_names]
+
+        n_adata = adata.n_obs
+        n_latent = latent.shape[0]
+        n_shared = latent.index.isin(adata.obs_names).sum()
+
+        print(
+            f"Shared cells: {n_shared:,} | "
+            f"removed from adata: {n_adata - n_shared:,} | "
+            f"removed from latent: {n_latent - n_shared:,}",
+            flush=True,
+        )
+
+        # keep only shared cells, preserve adata order
+        keep = adata.obs_names[adata.obs_names.isin(latent.index)]
+        adata = adata[keep].copy()
+        latent = latent.loc[keep].copy()
+
         adata.obsm['latent'] = np.asarray(latent)
         clust_kwargs.latent_kwargs['latent_component'] = 'latent'
         print(f"Finished reading in latent space: {latent.shape}", flush=True)
+
     else:
         print(f"latent_path is invalid or not provided. Using latent_kwargs['latent_component'] for clustering (None for PCA and a str for obsm key)", flush=True)
     
@@ -128,7 +144,7 @@ def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs): # data i
     print(f"Manager finished clustering {adata.shape[0]} cells into {len(clusters)} clusters of sizes {sizes}", flush=True)
 
     # save the markers from the 1st clustering
-    with open(os.path.join(out_dir, 'markers.pkl'), 'wb') as f:
+    with open(os.path.join(out_dir, 'markers_before_final_merge.pkl'), 'wb') as f:
         pickle.dump(markers, f)
     
     # Initialize job queue, and put all subclusters into the queue
@@ -174,7 +190,7 @@ def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs): # data i
         worker_rank = status.Get_source() # determine which worker just sent a message to the manager node 
         # tag = status.Get_tag() # tag==1: actual results, tag==0: acknowledgement of termination signal
 
-        append_markers(os.path.join(out_dir, 'markers.pkl'), new_markers) # writes to the markers.pkl file
+        append_markers(os.path.join(out_dir, 'markers_before_final_merge.pkl'), new_markers) # writes to the markers_before_final_merge.pkl file
         p = psutil.virtual_memory().percent
         if(p > 90):
             print(f"Caution! Memory usage exceeds 90%: {p}%", flush=True)
@@ -222,6 +238,15 @@ def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs): # data i
     with open(os.path.join(out_dir, "clustering_results.pkl"), 'wb') as f:
         pickle.dump(results, f)
     print(f"Total number of clusters: {len(results)}", flush=True)
+
+    # convert the clustering results to a .csv file
+    n_cells = sum(len(i) for i in results)
+    cl = ['unknown']*n_cells
+    for i in range(len(results)):
+        for j in results[i]:
+            cl[j] = i+1
+    res = pd.DataFrame({'cl': cl}, index=adata.obs_names)
+    res.to_csv(os.path.join(out_dir, 'clusters_before_final_merge.csv'))
 
     # remove the tmp folders if empty:
     if os.path.exists(tmp_dir_h5ads) and len(os.listdir(tmp_dir_h5ads)) == 0:

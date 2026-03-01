@@ -15,8 +15,8 @@ This method implements a **dynamic, asynchronous clustering algorithm** using th
    ```bash
    ./submit_pipeline.sh
    ```
-3. Find the final output
-   - The merged clustering results are saved in clustering_results_after_merging.csv, where the index contains cell names and the cl column contains cluster IDs
+3. Find the final outputs
+   - The clustering results before and after the final merge are saved in clusters_before_final_merge.csv and clusters_after_final_merge.csv, respectively. For both .csv files, the index contains cell names and the cl column contains cluster IDs
    - Refer to manager_output.log and final_merge.log for details on how clusters were split in each clustering job, and the number of clusters before and after final merging.
 
 ## Background
