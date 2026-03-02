@@ -235,7 +235,7 @@ def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs): # data i
     
     results = load_pkl(os.path.join(out_dir, 'clustering_results_tmp.pkl'))
 
-    with open(os.path.join(out_dir, "clustering_results.pkl"), 'wb') as f:
+    with open(os.path.join(out_dir, "clusters_before_final_merge.pkl"), 'wb') as f:
         pickle.dump(results, f)
     print(f"Total number of clusters: {len(results)}", flush=True)
 

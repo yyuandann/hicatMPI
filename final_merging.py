@@ -61,7 +61,24 @@ def main(adata_path, latent_path, out_dir, final_merge_kwargs): # data is a tupl
     if os.path.exists(latent_path):
         latent = pd.read_csv(latent_path, index_col=0)
         latent.index = latent.index.astype(str)
-        latent = latent.loc[adata.obs_names]
+
+        n_adata = adata.n_obs
+        n_latent = latent.shape[0]
+        n_shared = latent.index.isin(adata.obs_names).sum()
+
+        print(
+            f"Shared cells: {n_shared:,} | "
+            f"removed from adata: {n_adata - n_shared:,} | "
+            f"removed from latent: {n_latent - n_shared:,}",
+            flush=True,
+        )
+
+        # keep only shared cells, preserve adata order
+        keep = adata.obs_names[adata.obs_names.isin(latent.index)]
+        adata = adata[keep].copy()
+        latent = latent.loc[keep].copy()
+
+        # latent = latent.loc[adata.obs_names]
         adata.obsm['latent'] = np.asarray(latent)
         merge_kwargs.latent_kwargs['latent_component'] = 'latent'
         print(f"Finished reading in latent space: {latent.shape}")
@@ -69,7 +86,7 @@ def main(adata_path, latent_path, out_dir, final_merge_kwargs): # data is a tupl
         print(f"scvi_path is invalid or not provided. Using latent_kwargs['latent_component'] for clustering (None for PCA and a str for obsm key)")
     
     
-    with open(os.path.join(out_dir, 'out', 'clustering_results.pkl'), 'rb') as f:
+    with open(os.path.join(out_dir, 'out', 'clusters_before_final_merge.pkl'), 'rb') as f:
         clusters = pickle.load(f)
 
     # with open(os.path.join(out_dir, 'markers.pkl'), 'rb') as f:
