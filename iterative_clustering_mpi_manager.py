@@ -11,6 +11,7 @@ import re
 import ast
 import psutil
 import anndata as ad
+import scipy.sparse as sp
 
 from transcriptomic_clustering.iterative_clustering import onestep_clust, OnestepKwargs
 
@@ -51,6 +52,17 @@ def load_pkl(filepath):
                 break
     return results
 
+def get_max(X):
+
+    if sp.issparse(X):
+        max_val = X.data.max() if X.nnz else 0.0
+        # sparse matrices are implicitly zero elsewhere
+        max_val = max(max_val, 0.0)
+    else:
+        max_val = np.max(X)
+
+    return max_val
+
 def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs): # data is a tuple of anndata and key argumnents
     start = time.perf_counter()
         
@@ -88,12 +100,13 @@ def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs): # data i
 
     adata.obs_names = adata.obs_names.astype(str)
 
-    if np.max(adata.X) > 100:
+    if get_max(adata.X) > 100:
         print(f"Raw count data provided", flush=True)
         print(f"Normlazing total counts to 1e6...", flush=True)
         sc.pp.normalize_total(adata, target_sum=1e6)
         sc.pp.log1p(adata)
-        print(f"Finished normalization. max:{np.max(adata.X)}", flush=True)
+        new_max = get_max(adata.X)
+        print(f"Finished normalization. max:{new_max}", flush=True)
     else:
         print(f"Normalized data provided. Skipped normalization", flush=True)
     
