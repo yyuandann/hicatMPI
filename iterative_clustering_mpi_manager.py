@@ -86,6 +86,8 @@ def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs): # data i
         raise ValueError(f"Unsupported file format for adata_path: {adata_path}. Please provide a .h5ad or .zarr file.")
     print(f"Finished reading in anndata: {adata}", flush=True)
 
+    adata.obs_names = adata.obs_names.astype(str)
+
     if np.max(adata.X) > 100:
         print(f"Raw count data provided", flush=True)
         print(f"Normlazing total counts to 1e6...", flush=True)
@@ -99,13 +101,14 @@ def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs): # data i
 
     if os.path.exists(latent_path):
         latent = pd.read_csv(latent_path, index_col=0)
+        latent.index = latent.index.astype(str)
 
         n_adata = adata.n_obs
         n_latent = latent.shape[0]
         n_shared = latent.index.isin(adata.obs_names).sum()
 
         print(
-            f"Shared cells: {n_shared:,} | "
+            f"Shared cells between adata and latent: {n_shared:,} | "
             f"removed from adata: {n_adata - n_shared:,} | "
             f"removed from latent: {n_latent - n_shared:,}",
             flush=True,

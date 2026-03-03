@@ -48,6 +48,8 @@ def main(adata_path, latent_path, out_dir, final_merge_kwargs): # data is a tupl
     
     print(f"Finished reading in anndata: {adata}", flush=True)
 
+    adata.obs_names = adata.obs_names.astype(str)
+
     if np.max(adata.X) > 100:
         print(f"Raw count data provided")
         print(f"Normlazing total counts to 1e6...")
@@ -67,7 +69,7 @@ def main(adata_path, latent_path, out_dir, final_merge_kwargs): # data is a tupl
         n_shared = latent.index.isin(adata.obs_names).sum()
 
         print(
-            f"Shared cells: {n_shared:,} | "
+            f"Shared cells between adata and latent: {n_shared:,} | "
             f"removed from adata: {n_adata - n_shared:,} | "
             f"removed from latent: {n_latent - n_shared:,}",
             flush=True,
