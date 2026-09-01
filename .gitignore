@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+
+# Test-run artifacts: regenerable from the submit script beside them (~15 min),
+# and far too large for git (~67 MB of label CSVs). The submit_pipeline_*.sh copy
+# in each test folder is the reproducible record; the outputs are not tracked.
+tests/*/out/
+tests/*/*.log
+tests/*/slurm-*.out
+tests/*/worker_logs/
+tests/*/tmp_*/

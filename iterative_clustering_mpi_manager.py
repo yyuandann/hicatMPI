@@ -2,7 +2,10 @@ from mpi4py import MPI
 import queue
 import pickle
 import time
+import copy
 import os
+import importlib
+import shutil
 import sys
 import pandas as pd
 import numpy as np
@@ -12,8 +15,17 @@ import ast
 import psutil
 import anndata as ad
 import scipy.sparse as sp
+import warnings, logging
+warnings.filterwarnings("ignore")          # silence pandas/numpy warning flood from the aligned merge
+logging.disable(logging.WARNING)           # silence the clustering package's INFO/DEBUG flood (keeps ERROR/CRITICAL)
+pd.options.mode.chained_assignment = None
 
-from transcriptomic_clustering.iterative_clustering import onestep_clust, OnestepKwargs
+# Which package provides the clustering implementation. Defaults to transcriptomic_clustering;
+# set HICAT_PKG=pybigcat (with HICAT_PKG_PATH) to run the pipeline against the older package instead.
+# The two sbatch scripts export both variables, so a run is self-describing.
+_PKG = os.environ.get("HICAT_PKG", "transcriptomic_clustering")
+_ic = importlib.import_module(f"{_PKG}.iterative_clustering")
+onestep_clust, OnestepKwargs = _ic.onestep_clust, _ic.OnestepKwargs
 
 # Initialize MPI
 comm = MPI.COMM_WORLD
@@ -63,30 +75,83 @@ def get_max(X):
 
     return max_val
 
-def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs): # data is a tuple of anndata and key argumnents
+def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs,
+                      random_seed=2024): # data is a tuple of anndata and key argumnents
     start = time.perf_counter()
         
     clust_kwargs = preprocess_dict(clust_kwargs)
     clust_kwargs = ast.literal_eval(clust_kwargs)
 
-    means_vars_kwargs = clust_kwargs['means_vars_kwargs']
-    highly_variable_kwargs = clust_kwargs['highly_variable_kwargs']
-    pca_kwargs = clust_kwargs['pca_kwargs']
-    filter_pcs_kwargs = clust_kwargs['filter_pcs_kwargs']
-    filter_known_modes_kwargs = clust_kwargs['filter_known_modes_kwargs']
-    latent_kwargs = clust_kwargs['latent_kwargs']
-    cluster_louvain_kwargs = clust_kwargs['cluster_louvain_kwargs']
-    merge_clusters_kwargs = clust_kwargs['merge_clusters_kwargs']
+    # PCA-path blocks (means_vars/highly_variable/pca/filter_pcs/filter_known_modes) are used ONLY when
+    # latent_component is None; on the latent/embedding path they are ignored. Use .get(...) so they can
+    # be omitted entirely from clust_kwargs (default {} -> OnestepKwargs defaults are used).
+    means_vars_kwargs = clust_kwargs.get('means_vars_kwargs', {})
+    highly_variable_kwargs = clust_kwargs.get('highly_variable_kwargs', {})
+    pca_kwargs = clust_kwargs.get('pca_kwargs', {})
+    filter_pcs_kwargs = clust_kwargs.get('filter_pcs_kwargs', {})
+    filter_known_modes_kwargs = clust_kwargs.get('filter_known_modes_kwargs', {})
+    latent_kwargs = clust_kwargs.get('latent_kwargs', {})
+    # split_size: recursion stop -- min cluster size to keep sub-clustering. Set inside clust_kwargs.
+    split_size = clust_kwargs.get('split_size', 4)
+    # save_markers: whether to save the union of split-time DE genes as markers_before_final_merge.csv.
+    # Off by default: markers are properly computed on the FINAL clusters as a separate step
+    # (de_all_pairs + marker queries); the split-time union is only needed as a diagnostic or as
+    # input for a space='markers' final merge (runs without an integrated latent).
+    save_markers = clust_kwargs.get('save_markers', False)
+    cluster_louvain_kwargs = clust_kwargs.get('cluster_louvain_kwargs', {})
+    merge_clusters_kwargs = clust_kwargs.get('merge_clusters_kwargs', {})
 
-    clust_kwargs = OnestepKwargs(
-        means_vars_kwargs = means_vars_kwargs,
-        highly_variable_kwargs = highly_variable_kwargs,
-        pca_kwargs = pca_kwargs,
-        filter_pcs_kwargs = filter_pcs_kwargs,
-        filter_known_modes_kwargs = filter_known_modes_kwargs,
-        latent_kwargs = latent_kwargs,
-        cluster_louvain_kwargs = cluster_louvain_kwargs,
-        merge_clusters_kwargs = merge_clusters_kwargs
+    # Build two parameter sets that differ ONLY in the merge DE score threshold:
+    #   - clust_kwargs_top:    used by the manager's first (top-level) clustering
+    #   - clust_kwargs_refine: used by the workers' recursive sub-clustering
+    # merge_clusters_kwargs['thresholds']['score_thresh'] may be either a SCALAR (same threshold for
+    # both levels) or a 2-element list [top, recursive] (mirrors R de.score.th = 300 top / 150 refine).
+    merge_top = copy.deepcopy(merge_clusters_kwargs)
+    merge_refine = copy.deepcopy(merge_clusters_kwargs)
+    st = merge_clusters_kwargs.get('thresholds', {}).get('score_thresh')
+    if isinstance(st, (list, tuple)):
+        if len(st) != 2:
+            raise ValueError(f"score_thresh must be a scalar or [top, recursive]; got {st}")
+        top_th, rec_th = st[0], st[1]
+    else:
+        top_th = rec_th = st
+    # downstream merge_clusters_by_de expects a scalar score_thresh, so resolve the list here
+    merge_top['thresholds']['score_thresh'] = top_th
+    merge_refine['thresholds']['score_thresh'] = rec_th
+
+    # both share the same latent_kwargs dict, so setting latent_component below applies to both
+    def _make_onestep_kwargs(merge_kw):
+        return OnestepKwargs(
+            means_vars_kwargs = means_vars_kwargs,
+            highly_variable_kwargs = highly_variable_kwargs,
+            pca_kwargs = pca_kwargs,
+            filter_pcs_kwargs = filter_pcs_kwargs,
+            filter_known_modes_kwargs = filter_known_modes_kwargs,
+            latent_kwargs = latent_kwargs,
+            cluster_louvain_kwargs = cluster_louvain_kwargs,
+            merge_clusters_kwargs = merge_kw
+        )
+
+    clust_kwargs_top = _make_onestep_kwargs(merge_top)
+    clust_kwargs_refine = _make_onestep_kwargs(merge_refine)
+
+    # State the merge mode explicitly. Batch-aware merging fails SILENTLY if the kwarg is dropped or
+    # misspelled -- the run completes normally, just pooled -- so a log line is the only thing that
+    # distinguishes "ran batch-aware" from "quietly did not".
+    _bam = merge_clusters_kwargs.get('batch_aware_merging')
+    if _bam:
+        merge_mode_msg = (f"BATCH-AWARE on obs[{_bam.get('batch_obs')!r}] "
+                          f"(lfc_conservation_th={_bam.get('lfc_conservation_th', 0.7)}, "
+                          f"per-batch overrides: {sorted(_bam.get('thresholds', {}) or {})})")
+    else:
+        merge_mode_msg = "POOLED (batch_aware_merging not set)"
+
+    print(
+        f"split_size={split_size} | "
+        f"top-level score_thresh={merge_top['thresholds']['score_thresh']} | "
+        f"recursive score_thresh={merge_refine['thresholds']['score_thresh']} | "
+        f"merge={merge_mode_msg}",
+        flush=True,
     )
     
     if '.zarr' in adata_path:
@@ -133,35 +198,66 @@ def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs): # data i
         latent = latent.loc[keep].copy()
 
         adata.obsm['latent'] = np.asarray(latent)
-        clust_kwargs.latent_kwargs['latent_component'] = 'latent'
+        latent_kwargs['latent_component'] = 'latent'  # shared dict -> applies to both top & refine kwargs
         print(f"Finished reading in latent space: {latent.shape}", flush=True)
 
     else:
         print(f"latent_path is invalid or not provided. Using latent_kwargs['latent_component'] for clustering (None for PCA and a str for obsm key)", flush=True)
     
-    min_samples = 4
-    random_seed = 2024
+    # random_seed is now a function parameter (default 2024), set via CLI arg [5]
+    print(f"random_seed={random_seed}", flush=True)
 
-    tmp_dir_h5ads =  os.path.join(out_path,'tmp_h5ads')
-    if not os.path.exists(tmp_dir_h5ads):
-        os.makedirs(tmp_dir_h5ads)
+    # Batch-aware config vs the FULL data. This is the one place the complete modality set is
+    # known, so typos are caught here; deeper in the recursion a branch may hold only some
+    # modalities and merge_clusters treats overrides for the missing ones as inert.
+    if _bam:
+        batch_obs = _bam.get('batch_obs')
+        if batch_obs not in adata.obs:
+            raise ValueError(f"batch_aware_merging['batch_obs']={batch_obs!r} is not a column of "
+                             f"adata.obs (columns: {list(adata.obs.columns)})")
+        modalities = set(map(str, pd.unique(adata.obs[batch_obs])))
+        overrides = _bam.get('thresholds', {}) or {}
+        unknown = sorted(set(map(str, overrides)) - modalities)
+        if unknown:
+            raise ValueError(
+                f"batch_aware_merging['thresholds'] names modalities not present in the data: "
+                f"{unknown}. Modalities in adata.obs[{batch_obs!r}]: {sorted(modalities)}")
+        base_th = merge_clusters_kwargs.get('thresholds', {})
+        for m in sorted(modalities):
+            ov = overrides.get(m, {})
+            if ov:
+                print(f"[batch-aware] modality {m!r}: overrides {ov} (unlisted thresholds inherit "
+                      f"the shared values)", flush=True)
+            else:
+                shown = {k: base_th.get(k) for k in ('q1_thresh', 'score_thresh') if k in base_th}
+                print(f"[batch-aware] modality {m!r}: no per-modality override -- using the shared "
+                      f"thresholds (e.g. {shown})", flush=True)
 
-    tmp_dir_idx =  os.path.join(out_path,'tmp_idx')
-    if not os.path.exists(tmp_dir_idx):
-        os.makedirs(tmp_dir_idx)
+    # Start each run from a clean slate. Leftover chunks from an interrupted run would either be
+    # orphaned or mismatched to this run's cell partition; a missing tmp dir crashes the first
+    # sub-cluster write. Wipe + recreate so a cancel-and-resubmit is always safe.
+    tmp_dir_h5ads = os.path.join(out_path, 'tmp_h5ads')
+    tmp_dir_idx   = os.path.join(out_path, 'tmp_idx')
+    for _d in (tmp_dir_h5ads, tmp_dir_idx):
+        shutil.rmtree(_d, ignore_errors=True)
+        os.makedirs(_d, exist_ok=True)
 
     out_dir = os.path.join(out_path, "out")
-    if not os.path.exists(out_dir):
-        os.makedirs(out_dir)
+    os.makedirs(out_dir, exist_ok=True)
+    # clustering_results_tmp.pkl is written in append mode; drop any leftover so results aren't doubled.
+    _leftover = os.path.join(out_dir, 'clustering_results_tmp.pkl')
+    if os.path.exists(_leftover):
+        os.remove(_leftover)
 
-    # let the manager do the first clustering
-    clusters, markers = onestep_clust(adata, clust_kwargs, random_seed)
+    # let the manager do the first clustering (top-level score threshold)
+    clusters, markers = onestep_clust(adata, clust_kwargs_top, random_seed)
     sizes = [len(cluster) for cluster in clusters]
     print(f"Manager finished clustering {adata.shape[0]} cells into {len(clusters)} clusters of sizes {sizes}", flush=True)
 
-    # save the markers from the 1st clustering
-    with open(os.path.join(out_dir, 'markers_before_final_merge.pkl'), 'wb') as f:
-        pickle.dump(markers, f)
+    # save the markers from the 1st clustering (accumulator; only if save_markers)
+    if save_markers:
+        with open(os.path.join(out_dir, 'markers_before_final_merge.pkl'), 'wb') as f:
+            pickle.dump(markers, f)
     
     # Initialize job queue, and put all subclusters into the queue
     adata_tmp_idx = 1
@@ -170,7 +266,7 @@ def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs): # data i
         append_list_to_pkl(os.path.join(out_dir, 'clustering_results_tmp.pkl'), clusters[0])
     else:
         for i in range(len(clusters)):
-            if len(clusters[i]) < min_samples:
+            if len(clusters[i]) < split_size:
                 append_list_to_pkl(os.path.join(out_dir, 'clustering_results_tmp.pkl'), clusters[i])    
             else:
                 idx = clusters[i]
@@ -182,7 +278,7 @@ def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs): # data i
                 with open(new_idx_path, 'wb') as f:
                     pickle.dump(idx, f)
 
-                new_task = (onestep_clust, (new_adata_path, clust_kwargs, random_seed, new_idx_path))
+                new_task = (onestep_clust, (new_adata_path, clust_kwargs_refine, random_seed, new_idx_path))
                 job_queue.put(new_task)
 
                 adata_tmp_idx += 1
@@ -206,7 +302,8 @@ def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs): # data i
         worker_rank = status.Get_source() # determine which worker just sent a message to the manager node 
         # tag = status.Get_tag() # tag==1: actual results, tag==0: acknowledgement of termination signal
 
-        append_markers(os.path.join(out_dir, 'markers_before_final_merge.pkl'), new_markers) # writes to the markers_before_final_merge.pkl file
+        if save_markers:
+            append_markers(os.path.join(out_dir, 'markers_before_final_merge.pkl'), new_markers) # internal accumulator; converted to .csv and removed at the end of the run
         p = psutil.virtual_memory().percent
         if(p > 90):
             print(f"Caution! Memory usage exceeds 90%: {p}%", flush=True)
@@ -220,7 +317,7 @@ def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs): # data i
 
         else:
             for i in range(len(clusters)):
-                if len(clusters[i]) < min_samples:
+                if len(clusters[i]) < split_size:
                     append_list_to_pkl(os.path.join(out_dir, 'clustering_results_tmp.pkl'), clusters[i])
 
                 else:
@@ -233,7 +330,7 @@ def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs): # data i
                     with open(new_idx_path, 'wb') as f:
                         pickle.dump(idx, f)
 
-                    new_task = (onestep_clust, (new_adata_path, clust_kwargs, random_seed, new_idx_path))
+                    new_task = (onestep_clust, (new_adata_path, clust_kwargs_refine, random_seed, new_idx_path))
                     job_queue.put(new_task)
 
                     adata_tmp_idx += 1
@@ -250,12 +347,11 @@ def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs): # data i
     print(f"Finished all clustering tasks in {end - start:0.4f} seconds", flush=True)
     
     results = load_pkl(os.path.join(out_dir, 'clustering_results_tmp.pkl'))
-
-    with open(os.path.join(out_dir, "clusters_before_final_merge.pkl"), 'wb') as f:
-        pickle.dump(results, f)
     print(f"Total number of clusters: {len(results)}", flush=True)
 
-    # convert the clustering results to a .csv file
+    # convert the clustering results to a .csv file -- keyed by cell name, this is THE clustering
+    # artifact downstream steps consume (index-based .pkl outputs were dropped: decoupled from the
+    # adata they index into, they fail silently on a reordered/subset adata)
     n_cells = sum(len(i) for i in results)
     cl = ['unknown']*n_cells
     for i in range(len(results)):
@@ -263,6 +359,18 @@ def manager_job_queue(adata_path, latent_path, out_path, clust_kwargs): # data i
             cl[j] = i+1
     res = pd.DataFrame({'cl': cl}, index=adata.obs_names)
     res.to_csv(os.path.join(out_dir, 'clusters_before_final_merge.csv'))
+
+    # markers accumulated across all clustering jobs: write the user-facing copy as a plain
+    # one-gene-per-line csv, then drop the pkl accumulator (internal state only)
+    if save_markers:
+        with open(os.path.join(out_dir, 'markers_before_final_merge.pkl'), 'rb') as f:
+            _markers = pickle.load(f)
+        pd.Series(sorted(_markers), name='gene').to_csv(
+            os.path.join(out_dir, 'markers_before_final_merge.csv'), index=False)
+        os.remove(os.path.join(out_dir, 'markers_before_final_merge.pkl'))
+    else:
+        print("save_markers=False: split-time markers not saved (compute markers on the final "
+              "clusters with de_all_pairs as a separate step)", flush=True)
 
     # remove the tmp folders if empty:
     if os.path.exists(tmp_dir_h5ads) and len(os.listdir(tmp_dir_h5ads)) == 0:
@@ -284,4 +392,14 @@ if __name__ == "__main__":
         latent_path = sys.argv[2]
         out_path = sys.argv[3]
         clust_kwargs = sys.argv[4]
-        manager_job_queue(adata_path, latent_path, out_path, clust_kwargs)
+
+        # Optional args (positional). Missing or the literal "None" -> use defaults:
+        #   [5] random_seed : RNG seed (default 2024)
+        # split_size and the top/recursive merge DE score thresholds are set INSIDE clust_kwargs
+        # ('split_size', and merge_clusters_kwargs['thresholds']['score_thresh'] = [top, recursive]).
+        def _opt(i):
+            return sys.argv[i] if len(sys.argv) > i and sys.argv[i] not in ('', 'None') else None
+
+        random_seed = int(_opt(5)) if _opt(5) is not None else 2024
+
+        manager_job_queue(adata_path, latent_path, out_path, clust_kwargs, random_seed)

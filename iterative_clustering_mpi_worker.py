@@ -4,6 +4,10 @@ import os
 import pickle
 import traceback
 import sys
+import warnings, logging
+warnings.filterwarnings("ignore")          # silence pandas/numpy warning flood from the aligned merge
+logging.disable(logging.WARNING)           # silence the clustering package's INFO/DEBUG flood (keeps ERROR/CRITICAL)
+import pandas as _pd; _pd.options.mode.chained_assignment = None
 
 # Initialize MPI
 comm = MPI.COMM_WORLD

@@ -4,23 +4,47 @@
 This method implements a **dynamic, asynchronous clustering algorithm** using the **Message-Passing Interface (MPI)** to distribute clustering tasks across multiple HPC nodes. It provides the same clustering results as the transcriptomic_clustering package (except that nearby cluster ids no longer imply similarity), but is optimized for distributed computating using MPI, significantly reducing runtime for large datasets. In v2.0.0, the final merging step is included in the same run.
 
 ## Quick Start
-1. Edit `submit_pipeline.sh`
-   - Update the script to specify your input paths, clustering and final-merging parameters, and the number of nodes and memory to request on HPC.
-2. Make the `submit_pipeline.sh` file executable:
+
+1. Pick the example that matches your data — **the entire user-facing configuration lives in this
+   one file**:
+   - **`submit_pipeline_pooled.sh`** — **pooled merging**: the original pipeline, ignoring
+     batch/modality when merging clusters (one DE test over all cells; `split_size=10`).
+   - **`submit_pipeline_batchaware.sh`** — **batch-aware merging**: every batch/modality votes,
+     and a pair merges only if all of them vote to merge (R's `merge_cl_multiple`, at every level
+     and in the final merge; `split_size=100` so children keep enough cells per batch to judge).
+     The clustering itself is identical in both pipelines; the merge strategy and `split_size`
+     belong together — that is why the two cases are separate files rather than comment toggles.
+2. **Copy** the example into your project directory and edit it: input paths, thresholds, nodes and
+   memory. The copy documents that run's exact configuration — keep it next to the outputs.
+   - Input contract (both pipelines): the `.h5ad` must be **ln(CPM+1)** normalized (natural log) and
+     the latent csv must cover every cell. Batch-aware mode additionally needs the AnnData to fit in
+     memory, `adata.obs` to carry the batch column, and a union gene axis preferred (single-platform
+     evidence is kept) with `genes_by_batch` = the platforms' library lists; an intersection axis
+     needs no such parameter (see the file's header).
+3. Make it executable and run it — this submits the clustering job and (optionally) the final-merge
+   job with a dependency on it:
    ```bash
-   chmod +x submit_pipeline.sh
+   chmod +x submit_pipeline_batchaware.sh
+   ./submit_pipeline_batchaware.sh
    ```
-2. Run the submit_pipeline.sh 
-   - This submits both the clustering and the final merging job
-   ```bash
-   ./submit_pipeline.sh
-   ```
-3. Find the final outputs
-   - The clustering results before and after the final merge are saved in clusters_before_final_merge.csv and clusters_after_final_merge.csv, respectively. For both .csv files, the index contains cell names and the cl column contains cluster IDs
+4. Find the final outputs
+   - The clustering results before and after the final merge are saved in clusters_before_final_merge.csv and clusters_after_final_merge.csv, respectively. For both .csv files, the index contains cell names and the cl column contains cluster IDs. All outputs are keyed by cell name (no index-based .pkl outputs): the final merge joins the clustering to the adata by cell name and refuses to run if they are out of sync.
+   - Markers are computed on the final clusters as a **separate step** (`de_all_pairs` + marker queries; see the transcriptomic_clustering examples). Optionally, `'save_markers': True` in clust_kwargs saves the split-time DE-gene union as markers_before_final_merge.csv (a diagnostic, or input for a `space='markers'` final merge).
    - Refer to manager_output.log and final_merge.log for details on how clusters were split in each clustering job, and the number of clusters before and after final merging.
 
+The batch-aware configuration ships with the WMB2 production values as a worked example; it was
+validated against R's `merge_cl_multiple` (identical merge partitions given identical inputs) — see
+[the alignment reports](https://github.com/yyuandann/transcriptomic_clustering/tree/bigcat-alignment/docs/tests_aligning_to_bigcat)
+(report 10) for the validation and for which thresholds are dataset choices.
+
+## A note on determinism
+
+Which cells group together is deterministic — but the cluster IDs do not represent cluster
+similarity or mean anything (unlike R's, where nearby IDs imply similar clusters); they only
+reflect the order in which the clustering finished.
+
 ## Background
-The transcriptomic clustering Python package that uses a **scVI latent space** can be found here: [transcriptomic_clustering](https://github.com/AllenInstitute/transcriptomic_clustering/tree/hmba/tc_latent). It is the Python version of the R package [scrattch.hicat](https://github.com/AllenInstitute/scrattch.hicat), both of which perform clustering recursively (depth-first search). The recursive approach can take significant time for large datasets. For instance, clustering 1 million cells can take ~2 days.
+The transcriptomic clustering Python package that uses a **scVI latent space** can be found here: [transcriptomic_clustering](https://github.com/AllenInstitute/transcriptomic_clustering/tree/dev) (the `dev` branch; the former `hmba/tc_latent` branch was merged into it via PRs #131/#144 and deleted). It is the Python version of the R package [scrattch.hicat](https://github.com/AllenInstitute/scrattch.hicat), both of which perform clustering recursively (depth-first search). The recursive approach can take significant time for large datasets. For instance, clustering 1 million cells can take ~2 days.
 
 ## Distributed Clustering Model
 This method replaces the depth-first search (DFS) recursive method with a **dynamic, asynchronous manager-worker model**:

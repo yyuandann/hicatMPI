@@ -1,35 +1,37 @@
 #!/bin/bash
 #SBATCH --job-name=hicatMPI
 #SBATCH --partition=celltypes
-#SBATCH --nodes=10
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=10
 #SBATCH --time=100:00:00
-#SBATCH --mem=500G
-#SBATCH --mail-user=dan.yuan@alleninstitute.org
-#SBATCH --mail-type=END,FAIL
+# --nodes and --mem are supplied by submit_pipeline_*.sh on the sbatch command line
+# (command-line options override #SBATCH directives).
 
 set -euo pipefail
 
-# Things to edit in this .sh file: 
-# 1. Number of nodes and size to use. for over 1 million cells, I recommend using 11 nodes with each 500G memory. It will take 2 hours to finish. 
-#  - 5 200G nodes are enough for 20k cells
-#  - If HPC is busy, reduce the number of nodes. If requested n nodes, change the number of nodes for the workers to use in the last line of code to (n-1)
-# 2. the absolute path to the h5ad file, scvi latent space (.csv file), and a output path where the results will be saved. The .h5ad file should have raw counts or normalized counts in adata.X. The algorithm will automatically detect if the counts are raw or normalized. If it is raw counts, it will do the normalization. This will be noted in the log file
-# 3. the absolute path to the manager script and the worker script
-# 4. the clustering parameters. The default parameters are set to match the bigcat default parameters. You can change them as needed.
+# Shared machinery -- do NOT edit per run. All user settings (paths, nodes, memory, conda env,
+# package checkout, clustering/merge parameters) live in submit_pipeline_pooled.sh /
+# submit_pipeline_batchaware.sh, which invoke this script and pass everything in.
+# The worker count is derived from the allocation automatically (n_workers = SLURM_NTASKS - 1).
 
-scripts_dir="$1"
+hicatMPI_scripts_dir="$1"
 adata_path="$2"
 latent_path="$3"
 out_dir="$4"
 clust_kwargs="$5"
+# split_size (recursion stop) and the top/recursive DE score thresholds are set INSIDE clust_kwargs
+# ('split_size', and merge_clusters_kwargs['thresholds']['score_thresh'] = [top, recursive]).
+random_seed="${6:-None}"   # optional: RNG seed (default 2024 in manager); used for self-consistency runs
 
-manager_script="${scripts_dir}/iterative_clustering_mpi_manager.py"
-worker_script="${scripts_dir}/iterative_clustering_mpi_worker.py"
+manager_script="${hicatMPI_scripts_dir}/iterative_clustering_mpi_manager.py"
+worker_script="${hicatMPI_scripts_dir}/iterative_clustering_mpi_worker.py"
 
+# Conda env: settable from submit_pipeline_*.sh via HICAT_CONDA_ENV (passed on the sbatch
+# --export line); the default below is the fallback for direct invocation. Activation itself
+# must happen HERE, in the job, so the environment is self-contained on the compute node.
+HICAT_CONDA_ENV="${HICAT_CONDA_ENV:-/allen/programs/celltypes/workgroups/rnaseqanalysis/dyuan/miniconda3/envs/tc}"
 source /allen/programs/celltypes/workgroups/rnaseqanalysis/dyuan/miniconda3/etc/profile.d/conda.sh
-conda activate /allen/programs/celltypes/workgroups/rnaseqanalysis/dyuan/miniconda3/envs/tc
+conda activate "$HICAT_CONDA_ENV"
 
 if [ ! -d "$out_dir" ]; then
     # If the directory doesn't exist, create it
@@ -41,10 +43,18 @@ cd "$out_dir" # navigate to the output directory, where the log and out files wi
 n_workers=$(( SLURM_NTASKS - 1 ))
 echo "SLURM_NNODES=${SLURM_NNODES} SLURM_NTASKS=${SLURM_NTASKS} => manager=1 worker=${n_workers}"
 
-# export PYTHONPATH=/allen/programs/celltypes/workgroups/rnaseqanalysis/dyuan/tool/transcriptomic_clustering:$PYTHONPATH
-export PYTHONPATH="/allen/programs/celltypes/workgroups/rnaseqanalysis/dyuan/tool/transcriptomic_clustering${PYTHONPATH:+:$PYTHONPATH}" # with "set -euo" the previous line would fail if PYTHONPATH was not set which is the case
+# Which clustering package to run against. Defaults to transcriptomic_clustering; export
+# HICAT_PKG=pybigcat and HICAT_PKG_PATH=<...>/tool/pybigcat to use the older package instead.
+export HICAT_PKG="${HICAT_PKG:-transcriptomic_clustering}"
+export HICAT_PKG_PATH="${HICAT_PKG_PATH:-/allen/programs/celltypes/workgroups/rnaseqanalysis/dyuan/tool/transcriptomic_clustering}"
+export PYTHONPATH="${HICAT_PKG_PATH}${PYTHONPATH:+:$PYTHONPATH}"   # ":+" so "set -u" tolerates an unset PYTHONPATH
+echo "[hicatMPI] package=${HICAT_PKG} path=${HICAT_PKG_PATH}"
+# Compute nodes vary in how old /lib64/libstdc++ is; some are older than this env needs
+# (igraph -> libicuuc -> GLIBCXX_3.4.30), which makes the import fail on those nodes only.
+# Prefer the env's own libraries so the job runs the same wherever SLURM places it.
+export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 time mpiexec \
-    -n 1 sh -c "python \"$manager_script\" \"$adata_path\" \"$latent_path\" \"$out_dir\" \"$clust_kwargs\" > manager_output.log 2> manager_error.log" \
+    -n 1 sh -c "python \"$manager_script\" \"$adata_path\" \"$latent_path\" \"$out_dir\" \"$clust_kwargs\" \"$random_seed\" > manager_output.log 2> manager_error.log" \
     : \
     -n "$n_workers" sh -c "python \"$worker_script\" \"$out_dir\" 2> worker_error.log" 
